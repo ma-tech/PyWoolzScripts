@@ -162,6 +162,10 @@ def WriteMeshLabFilter(filename, flt):
       print(fr, file=ff)
   ff.close()
 
+def CleanExit(stat):
+  for f in glob.glob(workfile + '[0-1].*'):
+    os.remove(f)
+  exit(stat)
 
 if __name__ == '__main__':
   args = ParseArgs()
@@ -184,7 +188,7 @@ if __name__ == '__main__':
   rtn = subprocess.call(cmdline)
   if(bool(rtn)):
     print(prog + ': MAVTKDomainToSurf failed to create stl file.')
-    exit(1)
+    CleanExit(1)
 
   # Convert the stl file to a Woolz contour object, read it in and then
   # find the number of faces in the model.
@@ -195,18 +199,18 @@ if __name__ == '__main__':
   rtn = subprocess.call(cmdline)
   if(bool(rtn)):
     print(prog + ': WlzExtFFConvert failed to convert stl file to wlz.')
-    exit(1)
+    CleanExit(1)
   obj = Wlz.WlzAssignObject(ReadWoolzFile(workfile + '0.wlz'), None)
   if(not bool(obj)):
     print(prog + ': Failed to read Woolz file.')
-    exit(1)
+    CleanExit(1)
   model = obj.contents.domain.ctr.contents.model
   n_faces = model.contents.res.face.numElm
   if(args.verbose):
     print('Initial number of faces = ' + str(n_faces))
   if(n_faces < 4):
     print(prog + ': Invalid surface model (n_faces = ' + str(n_faces) + ')')
-    exit(1)
+    CleanExit(1)
 
   # Flip face orientation if required.
   if(args.flip):
@@ -216,14 +220,14 @@ if __name__ == '__main__':
     if(bool(errNum)):
       print(prog + ': Failed to flip face orientation (' +
             Wlz.WlzStringFromErrorNum(errNum, None) + ').')
-      exit(1)
+      CleanExit(1)
 
   # Write the Woolz object file using the stl file format.
   if(args.verbose):
     print('Writing working Woolz file.')
   if(bool(WriteWoolzObject(workfile + '0.wlz', obj))):
     print(prog + ': Failed to write working Woolz file.')
-    exit(1)
+    CleanExit(1)
   Wlz.WlzFreeObj(obj)
   cmdline = [WlzExtFFConvert, '-o' + workfile + '0.stl', \
              workfile + '0.wlz']
@@ -232,7 +236,7 @@ if __name__ == '__main__':
   rtn = subprocess.call(cmdline)
   if(bool(rtn)):
     print(prog + ': WlzExtFFConvert failed to convert working wlz file to stl.')
-    exit(1)
+    CleanExit(1)
 
   # Create meshlab filter script to reduce the number of faces and smooth
   # the surface
@@ -265,7 +269,7 @@ if __name__ == '__main__':
   rtn = subprocess.call(cmdline)
   if(bool(rtn)):
     print(prog + ':meshlabserver failed to run filter script.')
-    exit(1)
+    CleanExit(1)
 
   # Convert the STL file to VTK
   cmdline = [WlzExtFFConvert, '-o' + args.outfile, \
@@ -275,8 +279,6 @@ if __name__ == '__main__':
   rtn = subprocess.call(cmdline)
   if(bool(rtn)):
     print(prog + ': WlzExtFFConvert failed to convert working stl file to vtk.')
-    exit(1)
+    CleanExit(1)
 
-  # Clean up working files
-  for f in glob.glob(workfile + '[0-1].*'):
-    os.remove(f)
+  CleanExit(0)
