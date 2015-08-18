@@ -74,7 +74,7 @@ def ParseArgs():
       help='Verbose output (mainly useful for debugging).')
   parser.add_argument('-x', '--voxelscaling', \
       action='store_true', default=False, \
-      help='Verbose output (mainly useful for debugging).')
+      help='Use voxel size scaling.')
   parser.add_argument('infile',
       help='Input Woolz domain.')
   args = parser.parse_args()
