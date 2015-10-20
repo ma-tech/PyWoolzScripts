@@ -1,6 +1,6 @@
 #!/usr/bin/python
 ##
-# \file         LandmarksXML2Num.py
+# \file         WlzWarpPrjWarpValues.py
 # \author       Bill Hill
 # \date         October 2015
 # \version      $Id$
@@ -41,47 +41,63 @@ import sys
 import argparse
 from xml.etree import ElementTree as et
 
-def GetVertex(g): #{
-  x = float(g.find('X').text)
-  y = float(g.find('Y').text)
-  z = float(g.find('Z').text)
-  return list((x,y,z))
-#}
-
 def ParseArgs(): #{
   parser = argparse.ArgumentParser(description= \
-      'Read an XLM landmark or project file from WlzWarp then output the\n' + \
-      'landmarks as a .num style landmarks file to the standard output.')
-  parser.add_argument('-a', '--absolute', \
+      'Reads a WlzWarp project file and outputs the warp values to the\n' + \
+      'standard output. Default action s to retrieve all values, but if\n' + \
+      'any are specified then only those will be retrieve.')
+  parser.add_argument('-b', '--basis', \
       action='store_true', default=False, \
-      help='Absolute rather than relative displacements in output')
+      help='Retrieve warp basis function type.')
+  parser.add_argument('-d', '--delta', \
+      action='store_true', default=False, \
+      help='Retrieve warp delta value.')
+  parser.add_argument('-s', '--snap', \
+      action='store_true', default=False, \
+      help='Retrieve warp snap fit distance.')
+  parser.add_argument('-v', '--verbose', \
+      action='store_true', default=False, \
+      help='Verbose output.')
   parser.add_argument('infile', \
-      help='Input WlzWarp file.')
+      help='WlzWarp project input file.')
   args = parser.parse_args()
   return(args)
 #}
 
 if __name__ == '__main__': #{
   args = ParseArgs()
+  if (not args.basis) and (not args.delta) and (not args.snap): #{
+    args.basis = True
+    args.delta = True
+    args.snap = True
+  #}
   if not args.infile == '-': #{
     f = open(args.infile)
   else: #}{
     f = sys.stdin
   #}
   doc = et.parse(f)
-  lms = doc.find('LandmarkSet')
-  for lm in lms.findall('Landmark'): #{
-    src = lm.find('Source')
-    tgt = lm.find('Target')
-    s = GetVertex(src)
-    t = GetVertex(tgt)
-    print(str(s[0]) + ' ' + str(s[1]) + ' ' + str(s[2]) + ' ', end='')
-    if not args.absolute: #{
-      t[0] = t[0] - s[0]
-      t[1] = t[1] - s[1]
-      t[2] = t[2] - s[2]
+  wrp = doc.find('Warping')
+  if(args.basis): #{
+    basis = wrp.find('BasisFunctionType').text
+    if(args.verbose): #{
+      print('basis ', end='')
     #}
-    print(str(t[0]) + ' ' + str(t[1]) + ' ' + str(t[2]))
+    print(basis)
+  #}
+  if(args.delta): #{
+    delta = wrp.find('Delta').text
+    if(args.verbose): #{
+      print('delta ', end='')
+    #}
+    print(delta)
+  #}
+  if(args.snap): #{
+    snap = wrp.find('SnapToFitDist').text
+    if(args.verbose): #{
+      print('snap ', end='')
+    #}
+    print(snap)
   #}
   if f is not sys.stdin: #{
     f.close()

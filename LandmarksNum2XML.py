@@ -1,6 +1,6 @@
 #!/usr/bin/python
 ##
-# \file         LandmarksXML2Num.py
+# \file         LandmarksNum2XML.py
 # \author       Bill Hill
 # \date         October 2015
 # \version      $Id$
@@ -31,58 +31,73 @@
 # License along with this program; if not, write to the Free
 # Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
 # Boston, MA  02110-1301, USA.
-# \brief        Extracts landmarks from a WlzWarp file
+# \brief        Puts simple white space seperated tie points into a
+#               WlzWarp XML landmarks file
 ##
 
 from __future__ import print_function
 
 import os
+import re
 import sys
 import argparse
-from xml.etree import ElementTree as et
-
-def GetVertex(g): #{
-  x = float(g.find('X').text)
-  y = float(g.find('Y').text)
-  z = float(g.find('Z').text)
-  return list((x,y,z))
-#}
 
 def ParseArgs(): #{
   parser = argparse.ArgumentParser(description= \
-      'Read an XLM landmark or project file from WlzWarp then output the\n' + \
-      'landmarks as a .num style landmarks file to the standard output.')
+      'Reads a white space seperated (.num style) tie points file and\n' + \
+      'then writes it as a WlzWarp XLM landmark to the standard output.')
   parser.add_argument('-a', '--absolute', \
       action='store_true', default=False, \
-      help='Absolute rather than relative displacements in output')
+      help='Absolute rather than relative displacements in input')
   parser.add_argument('infile', \
-      help='Input WlzWarp file.')
+      help='Input tie points file.')
   args = parser.parse_args()
   return(args)
 #}
 
 if __name__ == '__main__': #{
+  cnt = 0
   args = ParseArgs()
+  prog = sys.argv[0];
+  rex = re.compile('[ \t]')
+  print('<?xml version="1.0" encoding="UTF-8"?>')
+  print('<LandmarkSet>')
+  print('  <Type>3D</Type>')
   if not args.infile == '-': #{
     f = open(args.infile)
   else: #}{
     f = sys.stdin
   #}
-  doc = et.parse(f)
-  lms = doc.find('LandmarkSet')
-  for lm in lms.findall('Landmark'): #{
-    src = lm.find('Source')
-    tgt = lm.find('Target')
-    s = GetVertex(src)
-    t = GetVertex(tgt)
-    print(str(s[0]) + ' ' + str(s[1]) + ' ' + str(s[2]) + ' ', end='')
-    if not args.absolute: #{
-      t[0] = t[0] - s[0]
-      t[1] = t[1] - s[1]
-      t[2] = t[2] - s[2]
+  for ln in f: #{
+    cnt = cnt + 1
+    rec = rex.split(ln)
+    if not len(rec) == 6: #{
+      print(prog + ': Invalid input at line ' + str(cnt))
+      exit(1)
     #}
-    print(str(t[0]) + ' ' + str(t[1]) + ' ' + str(t[2]))
+    lmk = [0.0] * 6
+    for idx in range(0,6): #{
+      lmk[idx] = float(rec[idx])
+    #}
+    if not args.absolute: #{
+      lmk[3] = lmk[0] + lmk[3];
+      lmk[4] = lmk[1] + lmk[4];
+      lmk[5] = lmk[2] + lmk[5];
+    #}
+    print('<Landmark>')
+    print('  <Source>')
+    print('    <X>' + str(lmk[0]) + '</X>')
+    print('    <Y>' + str(lmk[1]) + '</Y>')
+    print('    <Z>' + str(lmk[2]) + '</Z>')
+    print('  </Source>')
+    print('  <Target>')
+    print('    <X>' + str(lmk[3]) + '</X>')
+    print('    <Y>' + str(lmk[4]) + '</Y>')
+    print('    <Z>' + str(lmk[5]) + '</Z>')
+    print('  </Target>')
+    print('</Landmark>')
   #}
+  print('</LandmarkSet>')
   if f is not sys.stdin: #{
     f.close()
   #}
