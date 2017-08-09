@@ -102,8 +102,10 @@ def ExportDomainsToIndexObj(): #{
   dom_idxs = []
   with open(args.ldf) as ldf: #{
     for rec in ldf: #{
+      VerbMsg('rec = ' + rec)
       if not re.match(r'^[ \t]*#', rec): #{
-        dom_idx = int(re.split('\s', rec)[0])
+        rec = rec.lstrip()
+        dom_idx = int(re.split('\s+', rec)[0])
         dom_name = re.split('"', rec)[1]
         VerbMsg('idx = ' + str(dom_idx) + ' dom = ' + dom_name)
         if(dom_idx > 0): #{
