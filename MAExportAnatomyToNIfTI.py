@@ -47,29 +47,40 @@ import ctypes
 import urllib2
 import json
 
-class Label(object):
+class Label(object): #{
   def __init__(self, name, accession, color, index):
     self.name = name
     self.accession = accession
     self.color = color
     self.index = index
-  def __repr__(self):
+  def __repr__(self): #{
     return "<name: %s, accession: %s, color: %d,%d,%d>, index %d" % \
            (self.name, self.accession, \
             self.color[0], self.color[1], self.color[2], \
             self.index)
-  
+  #}
+#}
+
 singleStage        = None
 emapSrvDescURL     = \
     'http://www.emouseatlas.org/jsonservice/json_service?service=range'
 emapAnatomyDescURL = \
     'http://www.emouseatlas.org/jsonservice/json_service?service=domain'
+emapAtlasViewerURL = \
+    'http://www.emouseatlas.org/eAtlasViewer_ema/application/ema/anatomy/'
+emapAtlasViewerTree = \
+    '/tree/treeData.jso'
 WlzExtFFConvert    = '/opt/MouseAtlas/bin/WlzExtFFConvert'
 
-def ParseArgs():
+def ParseArgs(): #{
   parser = argparse.ArgumentParser(description= \
   'Creates NIfTI format files containing EMAP anatomy as indexed image\n' +
   'files along with ITK-SnAP label description files.')
+  parser.add_argument('-a', '--atlasviewer-colors', \
+      action='store_true', default=False, \
+      help='Overwrite the EMAP service colors with those of the \n' + \
+           'appropriate eAtlasViewer colors if appropriate and the \n' + \
+           'eAtlasViewer data exists.')
   parser.add_argument('-d', '--destdir', \
       type=str, default='.', \
       help='Destination directory for the output files.')
@@ -88,19 +99,27 @@ def ParseArgs():
       help='Verbose output (mainly useful for debugging).')
   args = parser.parse_args()
   return(args)
+#}
 
-def CleanExit(stat):
+def CleanExit(stat): #{
   exit(stat)
+#}
 
-def MakeFlatLabelTable(table, entry): #{
+def MakeFlatLabelTable(table, entry, model, prog): #{
   name = entry['name']
   if('children' in entry): #{
-    for ent in entry['children']:
-      MakeFlatLabelTable(table, ent)
+    for ent in entry['children']: #{
+      MakeFlatLabelTable(table, ent, model, prog)
+    #}
   else: #}{
-    row = Label(name, entry['domain']['accession'], entry['domain']['color'],
-                entry['domain']['index'])
-    table.append(row)
+    try: #{
+      row = Label(name, entry['domain']['accession'], entry['domain']['color'],
+                  entry['domain']['index'])
+      table.append(row)
+    except: #}{
+      print(prog + ': Warning - parse error for model ' + model + ' at ' + name,
+            file=sys.stderr)
+    #}
   #}
   return(table)
 #}
@@ -115,13 +134,58 @@ def CommandLineString(args): #{
   return(rtn)
 #}
 
+def MergeTreeColors(table, anatomyTree, prog, verbose): #{
+  for row in table: #{
+    aNode = False
+    tEMAPA = int(row.accession.split(':')[1])
+    # Search for the matching EMAPA number in the anatomy tree
+    for node in anatomyTree: #{
+      nEMAPA = -1
+      for eid in node['extId']: #{
+        e = re.split('[^0-9a-zA-Z]', eid)
+        try: #{
+          if(e[0] == 'EMAPA'): #{
+            nEMAPA = int(e[1])
+          #}
+          if(nEMAPA == tEMAPA): #{
+            aNode = node
+            break
+          #}
+        except: #}{
+          pass
+        #}
+      #}
+      if(bool(aNode)): #{
+        break
+      #}
+    #}
+    if(bool(aNode)): #{
+      try: #{
+        aColor = aNode['domainData']['domainColour']
+        if(verbose): #{
+          print(prog + ': Merged |' + str(tEMAPA) + '|' + 
+                row.name + '|' + aNode['name']  + '|' +
+                str(row.color) + '|' + str(aColor))
+        #}
+        row.color = [int(aColor[0]), int(aColor[1]), int(aColor[2])]
+      except: #}{
+        aNode = False
+      #}
+    #}
+    if(not bool(aNode)): #{
+      print(prog + ': Warning - failed to merge color for EMAPA:' +
+            str(tEMAPA) + ' ' + row.name, file=sys.stderr)
+    #}
+  #}
+#}
 
-if __name__ == '__main__':
+if __name__ == '__main__': #{
+  url = ''
   # Process the command line
   args = ParseArgs()
   prog = sys.argv[0];
   if(args.stage): #{
-    match = re.match(r'^TS\d\d?$', args.stage)
+    match = re.match(r'^TS\d\d?$', args.stage.upper())
     if(match): #{
       singleStage = match.group(0)
     else: #}{
@@ -148,7 +212,7 @@ if __name__ == '__main__':
     CleanExit(1)
   #}
   srvDesc = json.load(url)
-  #print(json.dumps(srvDesc))
+  #printi(json.dumps(srvDesc))tlasViewer
   # For each entry of the EMAP service description file
   for entry in srvDesc: #{
     idx = 0
@@ -209,26 +273,56 @@ if __name__ == '__main__':
                 adu = emapAnatomyDescURL + '&stage=' + stage + \
                       '&model=' + model
                 if(args.verbose):
-                  print(prog + ': Fetching anatomy description file (using\n' + \
-                        adu + ').') 
-                try:
+                  print(prog + ': Fetching anatomy description file ' + \
+                        '(using\n' + adu + ').') 
+                try: #{
                   url = urllib2.urlopen(adu)
-                except urllib2.HTTPError as e:
+                except urllib2.HTTPError as e: #}{
                   print(prog + ': Failed to open anatomy description file\n' +
-                        '(url' + adu + ').') 
+                        ' (url ' + adu + ').') 
                   CleanExit(1)
+                #}
                 anatomyDesc = json.load(url)
                 #print(json.dumps(anatomyDesc))
+                # Make a flat table from the anatomy description
+                table = MakeFlatLabelTable([], anatomyDesc, model, prog)
+                # Optionally overwrite the flat table anatomy colours
+                # using atlasViewer tree colours.
+                if(args.atlasviewer_colors): #{
+                  treeURL = emapAtlasViewerURL + model + emapAtlasViewerTree
+                  if(args.verbose): #{
+                    print(prog + ': Overwriting anatomy colors using file\n' +
+                          ' (url ' + treeURL + ').')
+                  #}
+                  try: #{
+                    url = urllib2.urlopen(treeURL)
+                  except urllib2.HTTPError as e: #}{
+                    print(prog + ': Failed to open atlas viewer tree file ' +
+                          '(url =\n' + treeURL + ').') 
+                    CleanExit(1)
+                  #}
+                  anatomyTree = False
+                  try: #{
+                    anatomyTree = json.load(url)
+                  except: #}{
+                    if(args.verbose): #{
+                      print(prog + ': No atlasViewer tree found for ' + model)
+                    #}
+                  #}
+                  if(anatomyTree): #{
+                    #print(json.dumps(anatomyTree))
+                    MergeTreeColors(table, anatomyTree, prog, args.verbose)
+                  #}
+                #}
+                # Sort the label table by index
+                table = sorted(table, key=lambda label: label.index)
+                # Print label table to file
                 if(args.nofiles): #{
                   f = sys.stdout
                 else: #}{
                   outfile = filebase + '.txt'
                   f = open(outfile, 'w')
                 #}
-                table = MakeFlatLabelTable([], anatomyDesc)
-                # Sort the label table by index
-                table = sorted(table, key=lambda label: label.index)
-                # Print label table to file
                 print('################################################\n' + \
                       '# ITK-SnAP Label Description File\n' + \
                       '# File format: \n' + \
@@ -267,3 +361,4 @@ if __name__ == '__main__':
   if(args.verbose):
     print(prog + ': Cleaning up.')
   CleanExit(0)
+#}
