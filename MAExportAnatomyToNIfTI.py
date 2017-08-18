@@ -40,12 +40,20 @@ from __future__ import print_function
 import os
 import re
 import sys
+import json
+import glob
+import errno
+import urllib2
+import tempfile
 import argparse
 import subprocess
-import tempfile
-import ctypes
-import urllib2
-import json
+import ctypes as c
+import Wlz as w
+
+libc = c.CDLL('libc.so.6')
+
+class WlzError(Exception):
+  pass
 
 class Label(object): #{
   def __init__(self, name, accession, color, index):
@@ -54,46 +62,117 @@ class Label(object): #{
     self.color = color
     self.index = index
   def __repr__(self): #{
-    return "<name: %s, accession: %s, color: %d,%d,%d>, index %d" % \
-           (self.name, self.accession, \
+    return '<name: %s, accession: %d, color: %d,%d,%d>, index %d' % \
+           (self.emapa, self.name, self.accession, \
             self.color[0], self.color[1], self.color[2], \
             self.index)
   #}
 #}
 
-singleStage        = None
-emapSrvDescURL     = \
+prog = ''
+args = None
+
+origin           = 'http://www.emouseatlas.org'
+
+db_image_area    = '/opt/emageDBLocation/dbImageArea/atlas/voxel3D/'
+
+wlzbin           = '/opt/MouseAtlas/bin/'
+wlzextffconvert  = wlzbin + 'WlzExtFFConvert'
+
+single_stage       = None
+emap_srv_desc_url  = \
     'http://www.emouseatlas.org/jsonservice/json_service?service=range'
-emapAnatomyDescURL = \
+emap_anat_desc_url = \
     'http://www.emouseatlas.org/jsonservice/json_service?service=domain'
-emapAtlasViewerURL = \
+emap_atlasviewer_url = \
     'http://www.emouseatlas.org/eAtlasViewer_ema/application/ema/anatomy/'
-emapAtlasViewerTree = \
+emap_atlasviewer_tree = \
     '/tree/treeData.jso'
-WlzExtFFConvert    = '/opt/MouseAtlas/bin/WlzExtFFConvert'
+emap_atlasviewer_tiledimagemodel = 'tiledImageModelData.jso'
+
+def ChkWoolzError(errNum, status): #{
+  if(bool(errNum)): #{
+    msg = 'Woolz error ' + w.WlzStringFromErrorNum(errNum, None)
+    if(status < 1): #{
+      MsgWarn(msg)
+    else: #}{
+      MsgError(msg, status)
+    #}
+    raise WlzError()
+  #}
+#}
+
+def CleanExit(stat): #{
+  MsgVerbose('Exit with status ' + str(stat))
+  exit(stat)
+#}
+
+def MsgVerbose(msg): #{
+  if(args.verbose): #{
+    print(prog + ': ' + msg, file=sys.stderr)
+  #}
+#}
+
+def MsgWarn(msg): #{
+  print(prog + ': WARNING - ' + msg, file=sys.stderr)
+#}
+
+def MsgError(msg, stat): #{
+  print(prog + ': ERROR - ' + msg, file=sys.stderr)
+  if(stat > 0): #{
+    CleanExit(stat)
+  #}
+#}
+
+def ReadJsonStrFromURL(u):
+  o = urllib2.urlopen(u)
+  s = o.read()
+  # Remove any trailing commas!
+  s = re.sub(",[ \t\r\n]+}", "}", s)
+  s = re.sub(",[ \t\r\n]+\]", "]", s)
+  return(s)
+
+def ConvertFileWlzToNii(wlz): #{
+  # Just can't see why this doesn't work! Fine if nii replaced by tif
+  # if run in a shell or even if run in python from REPL.
+  stat = 0
+  nii = re.sub('\.wlz$', '.nii', wlz)
+  cmd = wlzextffconvert + ' -f wlz -F nii -o ' + nii + ' ' + wlz
+  MsgVerbose(cmd)
+  stat = subprocess.call(cmd, shell=True)
+  if(stat > 0): #{
+    MsgWarn('Command Failed (' + cmd + ')(' + str(stat) + ')')
+  #}
+  return(stat)
+#}
 
 def ParseArgs(): #{
   parser = argparse.ArgumentParser(description= \
   'Creates NIfTI format files containing EMAP anatomy as indexed image\n' +
   'files along with ITK-SnAP label description files.')
-  parser.add_argument('-a', '--atlasviewer-colors', \
+  parser.add_argument('-a', '--atlasviewer', \
       action='store_true', default=False, \
-      help='Overwrite the EMAP service colors with those of the \n' + \
+      help='Add information from the eAtlasViewer:\n'
+           'Overwrite the EMAP service colors with those of the \n' + \
            'appropriate eAtlasViewer colors if appropriate and the \n' + \
-           'eAtlasViewer data exists.')
+           'eAtlasViewer data exists.\n' +
+           'Set voxel sizes using information from the eAtlasViewer.')
   parser.add_argument('-d', '--destdir', \
       type=str, default='.', \
       help='Destination directory for the output files.')
-  parser.add_argument('-n', '--nofiles', \
-      action='store_true', default=False, \
-      help='Dont write any files (label files written stdout, mainly\n' + \
-           'useful for debugging).')
   parser.add_argument('-i', '--noindex', \
       action='store_true', default=False, \
-      help='Dont make a NIfTI index file.')
+      help='Don\'t make index files.')
+  parser.add_argument('-n', '--nofiles', \
+      action='store_true', default=False, \
+      help='Don\'t write any files (label files written stdout, mainly\n' + \
+           'useful for debugging).')
   parser.add_argument('-s', '--stage', \
       type=str, default=None, \
       help='Single stage (eg TS14).')
+  parser.add_argument('-t', '--directory-tree',
+      action='store_true', default=False, \
+      help='Place files in a stage/model/file directory tree.')
   parser.add_argument('-v', '--verbose', \
       action='store_true', default=False, \
       help='Verbose output (mainly useful for debugging).')
@@ -101,264 +180,442 @@ def ParseArgs(): #{
   return(args)
 #}
 
-def CleanExit(stat): #{
-  exit(stat)
-#}
-
-def MakeFlatLabelTable(table, entry, model, prog): #{
+def MakeFlatLabelTable(table, entry, model): #{
   name = entry['name']
-  if('children' in entry): #{
-    for ent in entry['children']: #{
-      MakeFlatLabelTable(table, ent, model, prog)
-    #}
-  else: #}{
+  if('domain' in entry): #{
     try: #{
-      row = Label(name, entry['domain']['accession'], entry['domain']['color'],
-                  entry['domain']['index'])
+      row = Label(name, int(entry['domain']['accession'].split(':')[1]),
+                  entry['domain']['color'], entry['domain']['index'])
       table.append(row)
     except: #}{
-      print(prog + ': Warning - parse error for model ' + model + ' at ' + name,
-            file=sys.stderr)
+      MsgWarn('parse error for model ' + model + ' at ' + name)
+    #}
+  #}
+  if('children' in entry): #{
+    for ent in entry['children']: #{
+      MakeFlatLabelTable(table, ent, model)
     #}
   #}
   return(table)
 #}
 
-def CommandLineString(args): #{
-  rtn = ''
-  sep = ''
-  for a in args: #{
-    rtn = rtn + sep + str(a)
-    sep = ' '
-  #}
-  return(rtn)
-#}
-
-def MergeTreeColors(table, anatomyTree, prog, verbose): #{
+def MergeTreeColors(table, anat_tree): #{
   for row in table: #{
-    aNode = False
-    tEMAPA = int(row.accession.split(':')[1])
+    a_node = None
+    t_EMAPA = row.accession
+    t_name = row.name
     # Search for the matching EMAPA number in the anatomy tree
-    for node in anatomyTree: #{
-      nEMAPA = -1
+    for node in anat_tree: #{
+      n_EMAPA = -1
       for eid in node['extId']: #{
         e = re.split('[^0-9a-zA-Z]', eid)
         try: #{
           if(e[0] == 'EMAPA'): #{
-            nEMAPA = int(e[1])
+            n_EMAPA = int(e[1])
           #}
-          if(nEMAPA == tEMAPA): #{
-            aNode = node
+          if(n_EMAPA == t_EMAPA): #{
+            a_node = node
             break
           #}
         except: #}{
           pass
         #}
       #}
-      if(bool(aNode)): #{
+      if(bool(a_node)): #{
         break
       #}
     #}
-    if(bool(aNode)): #{
-      try: #{
-        aColor = aNode['domainData']['domainColour']
-        if(verbose): #{
-          print(prog + ': Merged |' + str(tEMAPA) + '|' + 
-                row.name + '|' + aNode['name']  + '|' +
-                str(row.color) + '|' + str(aColor))
+    # If EMAPA number not found search for exact name match
+    if(not bool(a_node)): #{
+      for node in anat_tree: #{
+        n_name = node['name']
+        if(t_name == n_name): #{
+          a_node = node
+          break
         #}
-        row.color = [int(aColor[0]), int(aColor[1]), int(aColor[2])]
-      except: #}{
-        aNode = False
       #}
     #}
-    if(not bool(aNode)): #{
-      print(prog + ': Warning - failed to merge color for EMAPA:' +
-            str(tEMAPA) + ' ' + row.name, file=sys.stderr)
+    if(bool(a_node)): #{
+      try: #{
+        a_color = a_node['domainData']['domainColour']
+        MsgVerbose('Merged |' + str(t_EMAPA) + '|' +
+                   row.name + '|' + a_node['name'] + '|' +
+                   str(row.color) + '|' + str(a_color))
+        row.color = [int(a_color[0]), int(a_color[1]), int(a_color[2])]
+      except: #}{
+        a_node = False
+      #}
+    #}
+    if(not bool(a_node)): #{
+      MsgWarn('failed to merge color for EMAPA:' + str(t_EMAPA) + ' ' +
+              row.name)
     #}
   #}
 #}
 
 if __name__ == '__main__': #{
-  url = ''
+  #
   # Process the command line
   args = ParseArgs()
   prog = sys.argv[0];
+  errNum = w.enum__WlzErrorNum(w.WLZ_ERR_NONE)
   if(args.stage): #{
     match = re.match(r'^TS\d\d?$', args.stage.upper())
     if(match): #{
-      singleStage = match.group(0)
+      single_stage = match.group(0)
     else: #}{
-      print(prog + ': Bad stage, specify using TS[0-9][0-9]? (eg TS07\n' +
-            'or TS17).')
-      CleanExit(1)
+      MsgError('Bad stage, specify using TS[0-9][0-9]? (eg TS07\n' +
+               'or TS17).', 1)
     #}
   #}
-
-  if(args.verbose): #{
-    print(prog + ': args = ' + str(args))
-  #}
-
+  MsgVerbose('args = ' + str(args))
+  #
   # Fetch the EMAP service description file
-  if(args.verbose): #{
-    print(prog + ': Fetching service description file (using url =\n' + \
-          emapSrvDescURL + ').')
-  #}
+  MsgVerbose('Fetching service description file (using url =\n' +
+             emap_srv_desc_url + ').')
   try: #{
-    url = urllib2.urlopen(emapSrvDescURL)
-  except urllib2.HTTPError as e: #}{
-    print(prog + ': Failed to open service description file (url =\n' + \
-          emapSrvDescURL + ').') 
-    CleanExit(1)
+    s = ReadJsonStrFromURL(emap_srv_desc_url)
+    srvDesc = json.loads(s)
+  except: #}{
+    MsgError('Failed to open service description file (url =\n' +
+             emap_srv_desc_url + ').')
   #}
-  srvDesc = json.load(url)
-  #printi(json.dumps(srvDesc))tlasViewer
+  #
   # For each entry of the EMAP service description file
-  for entry in srvDesc: #{
+  for entry in srvDesc: #{ service description entry
     idx = 0
     stage = entry['stage']
-    if(stage and ((not singleStage) or (singleStage == stage))): #{
-      idxFile = None
-      if(args.verbose): #{
-        print(prog + ': Processing stage ' + stage + '.')
-      #}
+    if(stage and ((not single_stage) or (single_stage == stage))): #{ stage
+      MsgVerbose('Processing stage ' + stage + '.')
       if 'voxelModel' in entry: #{
-        voxMod = entry['voxelModel']
-        # There may be many models ie voxMod[i] with i > 0
-        # use  model = "indexEMA118" stripped of the index prefix, eg:
-        # http://www.emouseatlas.org/jsonservice/json_service? \
-        # service=domain&stage=TS17&model=EMA118
-        for mod in voxMod: #{
+        vox_model = entry['voxelModel']
+        # There may be many models ie vox_model[i] with i > 0. Here we
+        # select the grey value object for each model in turn
+        for mod in vox_model: #{ model
+          vox_file = None
+          model = None
+          model_has_anat = True
+          out_file_idx = None
+          out_file_ref = None
+          out_file_txt = None
+          anat_table = None
+          idx_obj = None
+          idx_max = 0
+          ref_obj = None
+          voxel_sz = [1.0, 1.0, 1.0]
+          out_base_dir = args.destdir
           for mfm in mod: #{
-            model = None
-            if(args.verbose): #{
-              print(prog + ': Checking for model, name = ' + \
-                    mfm['name'] + '.')
-            #}
-            # Sometimes there is not EMA model just default, so allow
-            # default here
-            match = re.match(r'[a-z]*((EMA\d+)|(default))', mfm['name'])
-            if(match): #{
-              model = match.group(1)
-            #}
-            if(model and (mfm['type'] == 'index')): #{
-              idxFile = mfm['fileName']
-              if(args.verbose): #{
-                print(prog + ': At stage ' + stage + \
-                      ' with model ' + model + ', idxFile = ' + \
-                      str(idxFile) + '.')
-              #}
-              # If the index file exists  convert it to NIfTI then create the
-              # label description file
-              if(idxFile): #{
-                filebase = stage + '_' + model + '_anatomy'
-                # Convert the Woolz index file to NIfTI
-                if((not args.nofiles) and (not args.noindex)): #{
-                  cmdline = [WlzExtFFConvert, '-o' + filebase + '.nii', \
-                             idxFile]
-                  if(args.verbose): #{
-                    print(prog + \
-                          ': Converting index object to NIfTI format\n' + \
-                          'using: ' + CommandLineString(cmdline))
-                  #}
-                  rtn = subprocess.call(cmdline)
-                  if(bool(rtn)): #{
-                    print(prog + \
-                          ': WlzExtFFConvert failed to convert index\n' + \
-                          'from Woolz to NIfTI format.')
-                  #}
-                #}
-                # Fetch the anatomy description file and then make a ITK SnAP
-                # label file
-                adu = emapAnatomyDescURL + '&stage=' + stage + \
-                      '&model=' + model
-                if(args.verbose):
-                  print(prog + ': Fetching anatomy description file ' + \
-                        '(using\n' + adu + ').') 
-                try: #{
-                  url = urllib2.urlopen(adu)
-                except urllib2.HTTPError as e: #}{
-                  print(prog + ': Failed to open anatomy description file\n' +
-                        ' (url ' + adu + ').') 
-                  CleanExit(1)
-                #}
-                anatomyDesc = json.load(url)
-                #print(json.dumps(anatomyDesc))
-                # Make a flat table from the anatomy description
-                table = MakeFlatLabelTable([], anatomyDesc, model, prog)
-                # Optionally overwrite the flat table anatomy colours
-                # using atlasViewer tree colours.
-                if(args.atlasviewer_colors): #{
-                  treeURL = emapAtlasViewerURL + model + emapAtlasViewerTree
-                  if(args.verbose): #{
-                    print(prog + ': Overwriting anatomy colors using file\n' +
-                          ' (url ' + treeURL + ').')
-                  #}
-                  try: #{
-                    url = urllib2.urlopen(treeURL)
-                  except urllib2.HTTPError as e: #}{
-                    print(prog + ': Failed to open atlas viewer tree file ' +
-                          '(url =\n' + treeURL + ').') 
-                    CleanExit(1)
-                  #}
-                  anatomyTree = False
-                  try: #{
-                    anatomyTree = json.load(url)
-                  except: #}{
-                    if(args.verbose): #{
-                      print(prog + ': No atlasViewer tree found for ' + model)
-                    #}
-                  #}
-                  if(anatomyTree): #{
-                    #print(json.dumps(anatomyTree))
-                    MergeTreeColors(table, anatomyTree, prog, args.verbose)
-                  #}
-                #}
-                # Sort the label table by index
-                table = sorted(table, key=lambda label: label.index)
-                # Print label table to file
-                if(args.nofiles): #{
-                  f = sys.stdout
-                else: #}{
-                  outfile = filebase + '.txt'
-                  f = open(outfile, 'w')
-                #}
-                print('################################################\n' + \
-                      '# ITK-SnAP Label Description File\n' + \
-                      '# File format: \n' + \
-                      '# IDX   -R-  -G-  -B-  -A--  VIS MSH  LABEL\n' + \
-                      '# Fields: \n' + \
-                      '#    IDX:   Zero-based index \n' + \
-                      '#    -R-:   Red color component (0..255)\n' + \
-                      '#    -G-:   Green color component (0..255)\n' + \
-                      '#    -B-:   Blue color component (0..255)\n' + \
-                      '#    -A-:   Label transparency (0.00 .. 1.00)\n' + \
-                      '#    VIS:   Label visibility (0 or 1)\n' + \
-                      '#    IDX:   Label mesh visibility (0 or 1)\n' + \
-                      '#  LABEL:   Label description \n' + \
-                      '################################################\n' + \
-                      '     0    0    0    0 0.0      0 0 "Clear Label"',
-                      file=f)
-                for row in table: #{
-                  print('% 6d' % row.index + ' ', end='', file=f)
-                  print('% 4d' % row.color[0] + ' ', end='', file=f)
-                  print('% 4d' % row.color[1] + ' ', end='', file=f)
-                  print('% 4d' % row.color[2] + ' ', end='', file=f)
-                  print('1.0      1 1 ' + \
-                        '"' + row.accession + ' ' + row.name + '"', file=f)
-                #}
-                if(not args.nofiles):
-                  f.close()
+            MsgVerbose('Checking for model, name = ' + mfm['name'] + '.')
+            if(mfm['type'] == 'grey'): #{
+              match = re.match(r'(EMA\d+)', mfm['name'])
+              if(match): #{
+                model = match.group(1)
+                vox_file = str(mfm['fileName'])
+                MsgVerbose('At stage ' + stage + ' with model ' +
+                           model + ', vox_file = ' + vox_file + '.')
+              else: #}{
+                MsgWarn('parse error for model in ' + mfm['name'])
               #}
             #}
           #}
-        #}
+          if(args.directory_tree): #{
+            out_base_dir = out_base_dir + '/' + str(stage) + '/' + str(model)
+            try: #{
+              os.makedirs(out_base_dir)
+            except OSError as ex: #}{
+              if(ex.errno == errno.EEXIST): #{
+                pass
+              else: #}{
+                MsgError('Failed to create output directory ' + out_base_dir,
+                         1)
+              #}
+            #}
+          #}
+          file_base = out_base_dir + '/' + stage + '_' + model
+          # Fetch the anatomy description file and then make a ITK SnAP
+          # label file
+          adu = emap_anat_desc_url + '&stage=' + stage + \
+                '&model=' + model
+          MsgVerbose('Fetching anatomy description file (using ' + adu + ').')
+          try: #{
+            s = ReadJsonStrFromURL(adu)
+            anatomy_desc = json.loads(s)
+          except: #}{
+            model_has_anat = False
+            MsgWarn('Assuming no anatomy since failed to load anatomy ' + 
+                    'description file\n (url ' + adu + ').')
+          #}
+          if(model_has_anat): #{ model_has_anat
+            #print(str(anatomy_desc))
+            # Make a flat anatomy table from the anatomy description
+            anat_table = MakeFlatLabelTable([], anatomy_desc, model)
+            # Optionally overwrite the flat anatomy table colours
+            # using atlasViewer tree colours.
+            anat_tree = None
+            if(args.atlasviewer): #{
+              treeURL = emap_atlasviewer_url + model + emap_atlasviewer_tree
+              MsgVerbose('Overwriting anatomy colors using file (url ' +
+                         treeURL + ').')
+              try: #{
+                s = ReadJsonStrFromURL(treeURL)
+                anat_tree = json.loads(s)
+              except: #}{
+                anat_tree = None
+              #}
+              if(bool(anat_tree)): #{
+                #print(json.dumps(anat_tree))
+                MergeTreeColors(anat_table, anat_tree)
+              #}
+            #}
+            # Sort the label table by index
+            anat_table = sorted(anat_table,
+                                key=lambda label: label.index)
+            # Build label descriptions
+            label_desc = \
+                '################################################\n' + \
+                '# ITK-SnAP Label Description File\n' + \
+                '# File format: \n' + \
+                '# IDX   -R-  -G-  -B-  -A--  VIS MSH  LABEL\n' + \
+                '# Fields: \n' + \
+                '#    IDX:   Zero-based index \n' + \
+                '#    -R-:   Red color component (0..255)\n' + \
+                '#    -G-:   Green color component (0..255)\n' + \
+                '#    -B-:   Blue color component (0..255)\n' + \
+                '#    -A-:   Label transparency (0.00 .. 1.00)\n' + \
+                '#    VIS:   Label visibility (0 or 1)\n' + \
+                '#    IDX:   Label mesh visibility (0 or 1)\n' + \
+                '#  LABEL:   Label description \n' + \
+                '################################################\n'
+            label_desc = label_desc + \
+                '      0    0    0    0 0.0      0 0 "Clear Label"\n'
+            for row in anat_table: #{
+              if(row.index > idx_max): #{
+                idx_max = row.index
+              #}
+              label_desc = label_desc + \
+                  ' % 6d' % row.index + \
+                  ' % 4d' % row.color[0] + \
+                  ' % 4d' % row.color[1] + \
+                  ' % 4d' % row.color[2] + \
+                  ' 1.0      1 1' + \
+                  ' "EMAPA:' + str(row.accession) + ' ' + row.name + '"\n'
+            #}
+            # Print anatomy label table to file
+            try: #{
+              if(args.nofiles or args.noindex): #{
+                f = sys.stdout
+              else: #}{
+                out_file_txt = file_base + '_anatomy.txt'
+                f = open(out_file_txt, 'w')
+              #}
+              print(label_desc, end='', file=f)
+              if(not (args.nofiles or args.noindex)): #{
+                f.close()
+              #}
+            except: #}{
+              MsgError('Failed to write label description to file ' +
+                       out_file_txt + '.', 1)
+            #}
+          #} model_has_anat
+          #
+          # Get voxel size from eAtlasViewer
+          if(args.atlasviewer): #{
+            tim_desc = ''
+            timURL = emap_atlasviewer_url + model + '/' + \
+                     emap_atlasviewer_tiledimagemodel
+            MsgVerbose('Getting true voxel size using file (url ' +
+                       timURL + ').')
+            try: #{
+              s = ReadJsonStrFromURL(timURL)
+              tim_desc = json.loads(s)
+              v_sz = tim_desc['voxelSize']
+              voxel_sz[0] = float(v_sz['x'])
+              voxel_sz[1] = float(v_sz['y'])
+              voxel_sz[2] = float(v_sz['z'])
+            except: #}{
+              voxel_sz = [1.0, 1.0, 1.0]
+              MsgWarn('Assuming voxel size (1.0, 1.0, 1.0) since failed ' +
+                      'to load tiled image model ' +
+                      'from file\n (url ' + timURL + ').')
+            #}
+            MsgVerbose('Voxel size is ' + str(voxel_sz) + '.')
+          #}
+          #
+          # Copy the grey scale Woolz reference object setting name and
+          # text properties
+          if(not args.nofiles): #{
+            fple = c.CFUNCTYPE(c.c_void_p, c.c_void_p) \
+                   (w.WlzFreePropertyListEntry)
+            # Read the Woolz grey scale reference object and write it
+            try: #{
+              MsgVerbose('Reading voxel image from file ' + vox_file)
+              errNum = w.enum__WlzErrorNum(w.WLZ_ERR_FILE_OPEN)
+              fp = libc.fopen(vox_file.encode('utf-8'), 'rb')
+              ref_obj = w.WlzAssignObject( \
+                        w.WlzReadObj(fp, c.byref(errNum)), None)
+              libc.fclose(fp)
+              ChkWoolzError(errNum, 0)
+              MsgVerbose('Setting voxel image voxel size to ' + str(voxel_sz))
+              w.WlzSetVoxelSize(ref_obj, voxel_sz[0], voxel_sz[1], voxel_sz[2])
+              MsgVerbose('Creating reference object property list.')
+              p_lst = w.WlzMakePropertyList(None)
+              p_str = stage + '_' + model  + '_reference'
+              p_nam = w.WlzMakeNameProperty(p_str.encode('utf-8'),
+                                            c.byref(errNum))
+              p_txt = w.WlzMakeTextProperty('Origin'.encode('utf-8'),
+                                            origin.encode('utf-8'),
+                                            c.byref(errNum))
+              alcerr = w.AlcDLPListEntryAppend(p_lst.contents.list, None,
+                                               p_nam, fple)
+              alcerr = w.AlcDLPListEntryAppend(p_lst.contents.list, None,
+                                               p_txt, fple)
+              if(bool(alcerr)): #{
+                errNum = w.enum__WlzErrorNum(w.WLZ_ERR_MEM_ALLOC)
+              #}
+              ChkWoolzError(errNum, 0)
+              ref_obj.contents.plist = w.WlzAssignPropertyList(p_lst, None)
+              out_file_ref = file_base + '_reference.wlz'
+              MsgVerbose('Writing voxel image to file ' + out_file_ref)
+              fp = libc.fopen(out_file_ref.encode('utf-8'), 'wb')
+              errNum = w.WlzWriteObj(fp, ref_obj)
+              libc.fclose(fp)
+              ChkWoolzError(errNum, 0)
+            except: #}{
+              MsgError('Failed to copy grey scale Woolz voxel object (' +
+                       vox_file + ')', 1)
+            #}
+          #}
+          if(model_has_anat): #{
+            #
+            # Create compound object from the anatomy domains.
+            if(not (args.nofiles or args.noindex)): #{
+              try: #{
+                nullValues = w.WlzValues(None)
+                errNum = w.enum__WlzErrorNum(w.WLZ_ERR_NONE)
+                cpd_obj = w.WlzMakeCompoundArray( \
+                    w.enum__WlzObjectType(w.WLZ_COMPOUND_ARR_2), \
+                    1, idx_max + 1, None,
+                    ref_obj.contents.type, c.byref(errNum)) 
+                ChkWoolzError(errNum, 0)
+              except: #}{
+                MsgError('Failed to create compound object for ' +
+                         stage + ' ' + model +
+                         ' (' + w.WlzStringFromErrorNum(errNum, None) + ')', 1)
+              #}
+              for idx in range(0, len(anat_table)): #{
+                row = anat_table[idx]
+                domfile = glob.glob(db_image_area + stage.lower() +'/' + 
+                                    model +'/' + 
+                                    '/anatomy/EMAPA_' + str(row.accession) +
+                                    '/*.wlz')
+                if(len(domfile) == 0): #{
+                  domfile = None
+                  MsgWarn('Anatomy domain file not found for ' + stage +
+                          ' ' + model + ' EMAPA_' + str(row.accession))
+                elif(len(domfile) > 1): #}{
+                  MsgError('Multiple domain files found for ' + stage +
+                           ' ' + model + ' EMAPA_' + str(row.accession), 1)
+                else: #}{
+                  domfile = domfile[0]
+                #}
+                try: #{
+                  MsgVerbose('Reading anatomy domain from ' + domfile)
+                  errNum = w.enum__WlzErrorNum(w.WLZ_ERR_FILE_OPEN)
+                  fp = libc.fopen(domfile.encode('utf-8'), 'rb')
+                  cpd_obj.contents.o[row.index] = w.WlzAssignObject( \
+                      w.WlzReadObj(fp, c.byref(errNum)), None)
+                  libc.fclose(fp)
+                  ChkWoolzError(errNum, 0)
+                except: #}{
+                  MsgError('Failed to read anatomy domain from' + domfile, 1)
+                #}
+              #}
+              try: #{
+                alcerr = [None, None, None]
+                MsgVerbose('Creating index object from compound of domains.')
+                errNum = w.enum__WlzErrorNum(w.WLZ_ERR_NONE)
+                tmp_obj = w.WlzAssignObject(
+                          w.WlzIndexObjFromCompound(cpd_obj, 
+                                                    c.byref(errNum)), None)
+                w.WlzFreeObj(cpd_obj)
+                ChkWoolzError(errNum, 0)
+                MsgVerbose('Cutting index image to a cuboid.')
+                box = w.WlzBoundingBox3I(ref_obj, c.byref(errNum))
+                ChkWoolzError(errNum, 0)
+                idx_obj_grey_type = w.WLZ_GREY_INT
+                if (idx_max < 255): #{
+                  idx_obj_grey_type = w.WLZ_GREY_UBYTE
+                elif (idx_max < 32768): #}{
+                  idx_obj_grey_type = w.WLZ_GREY_SHORT
+                #}
+                idx_obj = w.WlzAssignObject(
+                          w.WlzCutObjToValBox3D(tmp_obj, box,
+                             w.enum__WlzGreyType(idx_obj_grey_type), None,
+                             0, 0.0, 0.0, c.byref(errNum)), None)
+                ChkWoolzError(errNum, 0)
+                w.WlzFreeObj(tmp_obj)
+                MsgVerbose('Setting index image voxel size to ' + str(voxel_sz))
+                w.WlzSetVoxelSize(idx_obj, 
+                                  voxel_sz[0], voxel_sz[1], voxel_sz[2])
+                MsgVerbose('Creating index object property list.')
+                p_lst = w.WlzMakePropertyList(None)
+                p_str = stage + '_' + model  + '_anatomy'
+                p_nam = w.WlzMakeNameProperty(p_str.encode('utf-8'),
+                                              c.byref(errNum))
+                ChkWoolzError(errNum, 0)
+                p_org = w.WlzMakeTextProperty('Origin'.encode('utf-8'),
+                                              origin.encode('utf-8'),
+                                              c.byref(errNum))
+                ChkWoolzError(errNum, 0)
+                p_lab = w.WlzMakeTextProperty(
+                            'Label Decriptions'.encode('utf-8'),
+                            label_desc.encode('utf-8'),
+                            c.byref(errNum))
+                ChkWoolzError(errNum, 0)
+                alcerr[0] = w.AlcDLPListEntryAppend(p_lst.contents.list, None,
+                                                    p_nam, fple)
+                alcerr[1] = w.AlcDLPListEntryAppend(p_lst.contents.list, None,
+                                                    p_org, fple)
+                alcerr[2] = w.AlcDLPListEntryAppend(p_lst.contents.list, None,
+                                                    p_lab, fple)
+                if(bool(alcerr[0]) or bool(alcerr[1]) or bool(alcerr[2])): #{
+                  errNum = w.enum__WlzErrorNum(w.WLZ_ERR_MEM_ALLOC)
+                #}
+                ChkWoolzError(errNum, 0)
+                idx_obj.contents.plist = w.WlzAssignPropertyList(p_lst, None)
+              except Exception as e: #}{
+                MsgError('Failed to create index object from compound object ' +
+                         stage + model + ' (' + str(e) + ') ' + str(alcerr) +
+                         ' (' + w.WlzStringFromErrorNum(errNum, None) + ')', 1)
+              #}
+            #}
+          #} model_has_anat
+          # Write index object to file
+          if(model_has_anat and not (args.nofiles or args.noindex)): #{
+            out_file_idx = file_base + '_anatomy.wlz'
+            try: #{
+              MsgVerbose('Writing index image to file ' + out_file_idx)
+              fp = libc.fopen(out_file_idx.encode('utf-8'), 'wb')
+              errNum = w.WlzWriteObj(fp, idx_obj)
+              libc.fclose(fp)
+              ChkWoolzError(errNum, 0)
+            except: #}{
+              MsgError('Failed to write anatomy index object to file' +
+                       out_file_idx +
+                       ' (' + w.WlzStringFromErrorNum(errNum, None) + ')', 1)
+            #}
+          #}
+          if(not args.nofiles): #{
+            if(model_has_anat and not (args.noindex)): #{
+              ConvertFileWlzToNii(out_file_idx)
+            #}
+            ConvertFileWlzToNii(out_file_ref)
+          #}
+          w.WlzFreeObj(idx_obj)
+          w.WlzFreeObj(ref_obj)
+        #} model
       #}
-    #}
-  #}
-        
-
-  if(args.verbose):
-    print(prog + ': Cleaning up.')
+    #} stage
+  #} service description entry
   CleanExit(0)
 #}
