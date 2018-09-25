@@ -297,12 +297,14 @@ class WlzView(QtGui.QMainWindow): #{
         raise WlzError()
       #}
       UPP = c.POINTER(c.POINTER(vtype))
-      aryc = c.cast(0, UPP)
+      UPV = c.POINTER(c.c_void_p)
+      aryc = c.cast(0,UPV)
       self.errnum = w.WlzToArray2D(c.byref(aryc), self.obj2d, sz, org, 0, \
                                    c.c_int(gtype))
       if(bool(self.errnum)): #{
         raise WlzError()
       #}
+      aryc = c.cast(aryc, UPP)
       ary = np.ctypeslib.as_array(aryc.contents, (sz.vtY, sz.vtX))
       self.obj_gtype = gtype
       self.obj2d_sz = [sz.vtX, sz.vtY]
@@ -415,7 +417,7 @@ class WlzView(QtGui.QMainWindow): #{
     obj = None
     logging.debug('attempting to read object from ' + fname)
     self.errnum = c.c_int(w.WLZ_ERR_FILE_OPEN)
-    fp = libc.fopen(fname, 'rb')
+    fp = c.cast(libc.fopen(fname, 'rb'), c.POINTER(w.FILE))
     if bool(fp): #{
       obj = w.WlzAssignObject( \
             w.WlzReadObj(fp, c.byref(self.errnum)), None)
