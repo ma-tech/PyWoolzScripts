@@ -47,6 +47,8 @@ import Wlz as w
 
 libc = c.CDLL('libc.so.6')
 
+libc.fopen.restype = c.POINTER(w.FILE)
+
 class WlzError(Exception):
   pass
 

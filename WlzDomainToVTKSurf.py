@@ -49,6 +49,8 @@ import Wlz
 
 libc = ctypes.CDLL("libc.so.6")
 
+libc.fopen.restype = ctypes.POINTER(Wlz.FILE)
+
 ma_bin_dir        = '/opt/MouseAtlas/bin'
 MAVTKDomainToSurf = ma_bin_dir + '/MAVTKDomainToSurf'
 WlzExtFFConvert   = ma_bin_dir + '/WlzExtFFConvert'

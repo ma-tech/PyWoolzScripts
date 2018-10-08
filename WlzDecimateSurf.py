@@ -48,6 +48,8 @@ import Wlz
 
 libc = ctypes.CDLL("libc.so.6")
 
+libc.fopen.restype = ctypes.POINTER(Wlz.FILE)
+
 ma_bin_dir        = '/opt/MouseAtlas/bin'
 WlzExtFFConvert   = ma_bin_dir + '/WlzExtFFConvert'
 MeshLabServer     = '/opt/vis/bin/meshlabserver'

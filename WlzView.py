@@ -14,6 +14,7 @@ from pyqtgraph.Qt import QtCore, QtGui
 
 libc = c.CDLL("libc.so.6")
 
+libc.fopen.restype = c.POINTER(w.FILE)
 
 class WlzError(Exception): #{
   pass
