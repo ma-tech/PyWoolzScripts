@@ -12,7 +12,7 @@
 #               Western General Hospital,
 #               Edinburgh, EH4 2XU, UK.
 # \par
-# Copyright (C), [2015],
+# Copyright (C), [2019],
 # The University Court of the University of Edinburgh,
 # Old College, Edinburgh, UK.
 # 
@@ -31,7 +31,7 @@
 # License along with this program; if not, write to the Free
 # Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
 # Boston, MA  02110-1301, USA.
-# \brief        Creates a Woolz spatial domain object with values from
+# \brief        Creates Woolz spatial domain objects with values from
 #               a DICOM image directory.
 ##
 
@@ -59,18 +59,19 @@ fclose.argtypes = c.c_void_p,
 fclose.restype = c.c_int
 
 
+verbose = False
+
 class WlzError(Exception):
   pass
 
-verbose = True
-
 def vrbMsg(msg):
+  global verbose
   if verbose:
     prog = sys.argv[0]
     print(prog + ': ' + msg, file=sys.stderr)
 
-# create single Woolz image from DICOM slices
-def makeWlzImageObj(slices, rescale=True): 
+# Create single Woolz image from DICOM slices
+def makeWlzImageObj(slices, rescale): 
   vrbMsg('creating Woolz object')
   obj = None
   gvw = None
@@ -113,9 +114,7 @@ def makeWlzImageObj(slices, rescale=True):
     vvp = obj.contents.values.vox.contents.values
     for iz in range(0, nz):
       si = slices[iz]
-      print(str(vvp[iz].r.contents))
       vp = vvp[iz].r.contents.values
-      print(str(vp))
       for iy in range(0, ny):
         offset = nx * iy
         for ix in range(0, nx):
@@ -142,7 +141,7 @@ def getFiles(img_path):
     img_files.append(dcm.read_file(img_path))
   return img_files
 
-# collect the files for each DICOM image series
+# Collect the files for each DICOM image series
 def collectSeries(img_files):
   vrbMsg('collecting image slices from files ' + str(img_files))
   img_series = {}
@@ -154,42 +153,54 @@ def collectSeries(img_files):
       img_series[n].append(f)
   return img_series
 
-# ensure that the slices of each series are in the correct order
+# Ensure that the slices of each series are in the correct order
 def sortSlices(img_series):
   vrbMsg('sorting slices')
   for i in img_series:
     img_series[i] = sorted(img_series[i], key=lambda s: s.SliceLocation)
 
-def outputFiles(out_dir, img_series, rescale):
+# Write Woolz object and text files
+def outputFiles(out_dir, img_series, rescale, nowrite):
   for i in img_series:
     vrbMsg('Encoding ' + img_series[i][0].ProtocolName + '_' + str(i))
     obj = makeWlzImageObj(img_series[i], rescale)
-    wlz_file = (out_dir + '/' +
-                img_series[i][0].ProtocolName + '_' + str(i) +
-                '.wlz').encode('utf-8')
-    mode = 'wb'.encode('utf-8')
-    fp = c.cast(fopen(wlz_file, mode), c.POINTER(w.FILE))
-    err_num = w.WlzWriteObj(fp, obj)
-    if bool(err_num):
-      raise WlzError()
-    fclose(fp)
+    file_base = out_dir + '/' + img_series[i][0].ProtocolName + '_' + str(i)
+    wlz_file_nm = file_base + '.wlz'
+    txt_file_nm = file_base + '.txt'
+    if not nowrite:
+      fp = c.cast(fopen(wlz_file_nm.encode('utf-8'), b'wb'), c.POINTER(w.FILE))
+      err_num = w.WlzWriteObj(fp, obj)
+      if bool(err_num):
+        raise WlzError()
+      fclose(fp)
+      vrbMsg('Woolz object written to ' + wlz_file_nm)
     w.WlzFreeObj(obj)
     obj = None
+    if not nowrite:
+      f = open(txt_file_nm, 'wt')
+      f.write(str(img_series[i][0]))
+      f.close()
+      vrbMsg('Text written to ' + txt_file_nm)
 
-# parse the command line arguments
+# Parse the command line arguments
 def parseArgs():
   parser = argparse.ArgumentParser(description = 
-  'Creates a Woolz spatial domain object with values from a DICOM image or ' +
-  'DICOM image directory.')
-  parser.add_argument('-o', '--outdir', \
-      type=str, required=True,\
+  'Creates Woolz spatial domain objects with values from a DICOM image or ' +
+  'DICOM image directory. The file names are set from within the DICOM file' +
+  'using the protocol name and image series index (<protocol>_<index>.wlz).' +
+  'The DICOM metadata is also saved to a text file (<protocol>_<index>.txt).')
+  parser.add_argument('-o', '--outdir',
+      type=str, required=True,
       help='Output directory for Woolz object files.')
-  parser.add_argument('-r', '--rescale', \
-      type=bool, default=False, \
+  parser.add_argument('-n', '--nowrite',
+      action='store_true', default=False,
+      help='Don\'t write any files (mainly useful for debugging).')
+  parser.add_argument('-r', '--rescale',
+      action='store_true', default=False,
       help='Rescale the image grey values using its grey value rescale ' +
       'parameters (use to get values as Hounsfield units where appropriate.')
-  parser.add_argument('-v', '--verbose', \
-      action='store_true', default=False, \
+  parser.add_argument('-v', '--verbose',
+      action='store_true', default=False,
       help='Verbose output (mainly useful for debugging).')
   parser.add_argument('inpath',
       help='Input DICOM directory or image.')
@@ -197,15 +208,13 @@ def parseArgs():
   return(args)
 
 def main():
+  global verbose
   args = parseArgs()
-  img_path = args.inpath
-  out_dir = args.outdir
-  rescale = args.rescale
-
-  img_files = getFiles(img_path)
+  verbose = args.verbose
+  img_files = getFiles(args.inpath)
   img_series = collectSeries(img_files)
   sortSlices(img_series)
-  outputFiles(out_dir, img_series, rescale)
+  outputFiles(args.outdir, img_series, args.rescale, args.nowrite)
 
 if __name__ == '__main__':
   main()
