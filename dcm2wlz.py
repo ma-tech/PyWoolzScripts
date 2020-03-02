@@ -120,10 +120,10 @@ def makeWlzImageObj(slices, rescale):
         for ix in range(0, nx):
           if g_type == int(w.WLZ_GREY_UBYTE):
             ubp = vp.ubp[offset + ix]
-            ubp.contents = c.c_char(si.pixel_array[ix,iy])
+            ubp.contents = c.c_char(si.pixel_array[iy,ix])
           elif g_type == int(w.WLZ_GREY_SHORT):
             vp.shp[offset + ix] = c.c_short(
-                int((si.pixel_array[ix,iy] * r_slope) + r_intercept))
+                int((si.pixel_array[iy,ix] * r_slope) + r_intercept))
           else:
             raise Exception('Unsupported voxel grey type.')
   return obj
