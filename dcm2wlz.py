@@ -39,6 +39,7 @@ import os
 import sys
 import glob
 import argparse
+import math as m
 import numpy as np
 import pydicom as dcm
 import ctypes as c
@@ -70,6 +71,10 @@ def vrbMsg(msg):
     prog = sys.argv[0]
     print(prog + ': ' + msg, file=sys.stderr)
 
+def wrnMsg(msg):
+  prog = sys.argv[0]
+  print(prog + ': Warning - ' + msg, file=sys.stderr)
+
 # Create single Woolz image from DICOM slices
 def makeWlzImageObj(slices, rescale): 
   vrbMsg('creating Woolz object')
@@ -86,14 +91,20 @@ def makeWlzImageObj(slices, rescale):
   r_slope = 1.0
   bgd_v = 0
   if rescale:
-    r_intercept = float(s0.RescaleIntercept)
-    r_slope = float(s0.RescaleSlope)
-    bgd_v = int(r_intercept)
-  if nz < 2:
+    if ('RescaleIntercept' in s0) and ('RescaleSlope' in s0):
+      r_intercept = float(s0.RescaleIntercept)
+      r_slope = float(s0.RescaleSlope)
+      bgd_v = int(r_intercept)
+    else:
+      wrnMsg('Unable to rescale image grey values to Hounsfield units as ' +
+             'rescale parameters not in DICOM metadata.')
+  sz = m.fabs(slices[1].ImagePositionPatient[2] - s0.ImagePositionPatient[2])
+  if (sz < sys.float_info.epsilon) and ('SpacingBetweenSlices' in s0):
+    sz = m.fabs(s0.SpacingBetweenSlices)
+  if sz < sys.float_info.epsilon:
+    if nz > 1:
+      wrnMsg('Multiple slices at same position, slice thickness set to 1.0.')
     sz = 1.0
-  else:
-    sz = float(np.abs(slices[1].ImagePositionPatient[2] -
-                      s0.ImagePositionPatient[2]))
   x1 = int(np.floor(s0.ImagePositionPatient[0] / sx))
   y1 = int(np.floor(s0.ImagePositionPatient[1] / sy))
   z1 = int(np.floor(s0.ImagePositionPatient[2] / sz))
