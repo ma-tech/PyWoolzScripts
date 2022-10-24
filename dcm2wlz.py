@@ -116,6 +116,10 @@ def makeWlzImageObj(slices, rescale):
   else:
     raise Exception('Unsupported voxel grey type.')
   err_num = w.enum__WlzErrorNum(w.WLZ_ERR_NONE)
+  vrbMsg('Creating cuboid object (' + 
+          str(z1) + ', ' + str(z1 + nz - 1) + ', ' +
+          str(y1) + ', ' + str(y1 + ny - 1) + ', ' +
+          str(x1) + ', ' + str(x1 + nx - 1) +')')
   obj = w.WlzMakeCuboidI(z1, z1 + nz - 1, y1, y1 + ny - 1, x1, x1 + nx - 1,
              g_type, bgd_v, None, None, c.byref(err_num))
   if not bool(err_num):
@@ -124,6 +128,7 @@ def makeWlzImageObj(slices, rescale):
   if not bool(err_num):
     vvp = obj.contents.values.vox.contents.values
     for iz in range(0, nz):
+      vrbMsg('Setting values for slice ' + str(iz)+ ' of ' + str(nz))
       si = slices[iz]
       vp = vvp[iz].r.contents.values
       for iy in range(0, ny):
@@ -137,6 +142,7 @@ def makeWlzImageObj(slices, rescale):
                 int((si.pixel_array[iy,ix] * r_slope) + r_intercept))
           else:
             raise Exception('Unsupported voxel grey type.')
+    vrbMsg('Object complete.')
   return obj
     
 # If the given path is a regular file add it otherwise if it's a directory
