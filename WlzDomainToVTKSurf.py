@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 ##
 # \file         WlzDomainToVTKSurf.py
 # \author       Bill Hill
@@ -45,6 +45,7 @@ import subprocess
 import tempfile
 import ctypes
 import glob
+import pymeshlab
 import Wlz
 
 libc = ctypes.CDLL("libc.so.6")
@@ -73,7 +74,8 @@ def ParseArgs():
       help='Temporary directory for working files.')
   parser.add_argument('-v', '--verbose', \
       action='store_true', default=False, \
-      help='Verbose output (mainly useful for debugging).')
+      help='Verbose output (mainly useful for debugging and reassurance ' +
+           'that the script is doing something).')
   parser.add_argument('-x', '--voxelscaling', \
       action='store_true', default=False, \
       help='Use voxel size scaling.')
@@ -86,7 +88,8 @@ def ParseArgs():
 def ReadWoolzFile(filename):
   obj = None
   errNum = Wlz.enum__WlzErrorNum(Wlz.WLZ_ERR_FILE_OPEN)
-  fp = libc.fopen(filename, 'rb')
+  afn = bytes(filename, 'ascii')
+  fp = libc.fopen(afn, b'rb')
   if(bool(fp)):
     obj = Wlz.WlzReadObj(fp, ctypes.byref(errNum))
     libc.fclose(fp)
@@ -95,7 +98,8 @@ def ReadWoolzFile(filename):
 
 def WriteWoolzObject(filename, obj):
   errNum = Wlz.enum__WlzErrorNum(Wlz.WLZ_ERR_FILE_OPEN)
-  fp = libc.fopen(filename, 'wb')
+  afn = bytes(filename, 'ascii')
+  fp = libc.fopen(afn, b'wb')
   if(bool(fp)):
     errNum = Wlz.WlzWriteObj(fp, obj)
     libc.fclose(fp)
@@ -117,7 +121,7 @@ def EndMeshLabFilter(flt):
 
 def AppendMeshLabFilter(flt, target_face_count, taubin_steps):
   if(target_face_count > 0):
-    flt.append('<filter name="Quadric Edge Collapse Decimation">')
+    flt.append('<filter name="Simplification: Quadric Edge Collapse Decimation">')
     flt.append('<Param type = "RichInt"   value = "' + \
                str(target_face_count) + '" ' + \
                'name = "TargetFaceNum"/>')
@@ -262,18 +266,19 @@ if __name__ == '__main__':
   WriteMeshLabFilter(workfile + '0.mlx', flt)
   
   # Execute the MeshLab filter
-  cmdline = [MeshLabServer,
-             '-i ' + workfile + '0.stl', \
-             '-o ' + workfile + '1.stl', \
-             '-s ' + workfile + '0.mlx']
   if(args.verbose):
-    print(cmdline)
-  rtn = subprocess.call(cmdline)
-  if(bool(rtn)):
-    print(prog + ':meshlabserver failed to run filter script.')
-    CleanExit(1)
+    print('Executing MeshLab filter file.')
+  ms = pymeshlab.MeshSet()
+  if(args.verbose):
+    ms.set_verbosity(True)
+  ms.load_new_mesh(workfile + '0.stl')
+  ms.load_filter_script(workfile + '0.mlx')
+  ms.apply_filter_script()
+  ms.save_current_mesh(workfile + '1.stl')
 
   # Convert the STL file to VTK
+  if(args.verbose):
+    print('Converting to output format.')
   cmdline = [WlzExtFFConvert, '-o' + args.outfile, \
              workfile + '1.stl']
   if(args.verbose):
